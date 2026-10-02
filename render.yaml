@@ -1,0 +1,22 @@
+# Render deploy file: IDs mitne ki asli fix yahi hai.
+# Free plan par bina disk ke har restart par game.db WIPE ho jata hai.
+# Is file se deploy karne par /var/data disk auto-attach hogi aur
+# DATABASE_PATH us par jayega, to restart ke baad bhi users bache rahenge.
+services:
+  - type: web
+    name: colour-debt-3d
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4
+    disk:
+      name: colour-debt-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: DATABASE_PATH
+        value: /var/data/game.db
+      - key: SECRET_KEY
+        generateValue: true
+      - key: PYTHON_VERSION
+        value: 3.11.0
