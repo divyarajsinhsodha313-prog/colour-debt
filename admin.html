@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Colour Debt 3D — Admin Panel</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<style>
+  /* Admin page must scroll independently from the game canvas. */
+  html, body {
+    height: auto !important;
+    min-height: 100% !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    touch-action: auto !important;
+  }
+  body {
+    position: static !important;
+  }
+  /* Admin page uses the same dark theme; extra rows below are only for this page */
+  #adminWrap { max-width: 900px; margin: 0 auto; padding: 70px 16px 100px; color: #fff; min-height: 100vh; box-sizing: border-box; }
+  #adminWrap h1 { text-align: center; }
+  .statGrid { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; margin: 16px 0; }
+  .statBox { background: #252b3a; border-radius: 12px; padding: 12px 18px; min-width: 130px; text-align: center; }
+  .statBox b { display: block; font-size: 1.5em; color: #f5c93b; }
+  #adminTable { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 0.9em; }
+  #adminTable th, #adminTable td { border: 1px solid #3a4157; padding: 7px 8px; text-align: center; }
+  #adminTable th { background: #2b3245; color: #f5c93b; }
+  #feedbackTable { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 0.9em; }
+  #feedbackTable th, #feedbackTable td { border: 1px solid #3a4157; padding: 9px 8px; text-align: left; vertical-align: top; }
+  #feedbackTable th { background: #2b3245; color: #f5c93b; text-align: center; }
+  .feedbackStars { color: #f5c93b; font-size: 1.1em; white-space: nowrap; }
+  .feedbackMessage { min-width: 220px; max-width: 440px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .btnFeedbackDel { background: #e5484d; color: #fff; border: none; border-radius: 8px; padding: 5px 8px; cursor: pointer; }
+  .rowBtns { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; }
+  .rowBtns button { font-size: 0.8em; padding: 5px 8px; border-radius: 8px; border: none; cursor: pointer; }
+  .btnGive { background: #f5c93b; } .btnPw { background: #7dd3fc; }
+  .btnReset { background: #f0a35e; } .btnDel { background: #e5484d; color: #fff; }
+  #adminLogin { text-align: center; margin-top: 120px; color: #fff; }
+  #adminLogin input { padding: 10px; font-size: 1em; border-radius: 10px; border: none; margin: 6px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<!-- Login box first: admin password maango chhu, game password nahi -->
+<div id="adminLogin">
+  <h1 class="title">🔐 ADMIN LOGIN</h1>
+  <p class="sub">Game owner only (default password: admin123)</p>
+  <input type="password" id="adminPw" placeholder="Admin password">
+  <br><button class="btn btn-green" id="adminLoginBtn">Login</button>
+  <p id="adminLoginErr"></p>
+</div>
+
+<div id="adminWrap" class="hidden">
+  <h1 class="title">🛠️ ADMIN PANEL</h1>
+  <p class="sub" style="text-align:center;">Database: game.db (users table) — badha change tarat game ma dekhay</p>
+  <div style="text-align:center;">
+    <button class="btn btn-gray" id="adminRefreshBtn">🔄 Refresh</button>
+    <button class="btn btn-gold" id="adminLogoutBtn">Logout</button>
+    <a href="/" style="color:#7dd3fc;">← Back to Game</a>
+  </div>
+  <!-- Stats dashboard: total users / coins / top players -->
+  <h2 style="color:#f5c93b;">📊 Stats</h2>
+  <div class="statGrid" id="statGrid"></div>
+  <div id="topList"></div>
+  <!-- Users table: coins aapo, password reset, progress reset, delete -->
+  <h2 style="color:#f5c93b;">👥 All Players</h2>
+  <div style="overflow-x:auto;">
+  <table id="adminTable">
+    <tr><th>Player</th><th>🪙</th><th>💎</th><th>Levels</th><th>E/M/H</th><th>Actions</th></tr>
+    <tbody id="adminRows"></tbody>
+  </table>
+  </div>
+
+  <!-- Player feedback: ratings and comments submitted from the game Settings screen -->
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+    <h2 style="color:#f5c93b;margin-bottom:0;">⭐ Player Feedback</h2>
+    <button class="btn btn-gray" id="feedbackRefreshBtn" type="button">🔄 Refresh Feedback</button>
+  </div>
+  <div class="statGrid" id="feedbackStats"></div>
+  <div style="overflow-x:auto;">
+    <table id="feedbackTable">
+      <thead><tr><th>Player</th><th>Rating</th><th>Feedback</th><th>Date</th><th>Action</th></tr></thead>
+      <tbody id="feedbackRows"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body === undefined ? 'GET' : 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body || {}),
+  });
+  return res.json();
+}
+$('adminLoginBtn').addEventListener('click', async () => {
+  const d = await api('/api/admin/login', { password: $('adminPw').value });
+  if (!d.ok) { $('adminLoginErr').textContent = d.error || 'Login failed'; return; }
+  $('adminLogin').classList.add('hidden');
+  $('adminWrap').classList.remove('hidden');
+  loadAll();
+});
+$('adminPw').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('adminLoginBtn').click(); });
+$('adminLogoutBtn').addEventListener('click', async () => {
+  await api('/api/admin/logout', {});
+  location.reload();
+});
+$('adminRefreshBtn').addEventListener('click', loadAll);
+$('feedbackRefreshBtn').addEventListener('click', loadFeedback);
+
+async function loadAll() {
+  const o = await api('/api/admin/overview');
+  if (!o.ok) { alert('Admin login needed'); location.reload(); return; }
+  $('statGrid').innerHTML =
+    statBox(o.totalUsers, 'Players') + statBox(o.totalCoins, '🪙 Coins') +
+    statBox(o.totalDiamonds, '💎 Diamonds') + statBox(o.totalLevelsCompleted, 'Levels cleared');
+  $('topList').innerHTML = '<b>🏆 Top players:</b> ' +
+    (o.topPlayers || []).map((t) => t.username + ' (' + t.levelsCompletedCount + ' lv, ' + t.coins + ' 🪙)').join(' • ');
+  const u = await api('/api/admin/users');
+  const tb = $('adminRows');
+  tb.innerHTML = '';
+  (u.users || []).forEach((p) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + p.username + '</td><td>' + p.coins + '</td><td>' + p.diamonds + '</td>' +
+      '<td>' + p.levelsCompletedCount + '</td><td>' + p.unlockedLevel.EASY + '/' + p.unlockedLevel.MEDIUM + '/' + p.unlockedLevel.HARD + '</td>';
+    const act = document.createElement('td');
+    act.className = 'rowBtns';
+    act.appendChild(mkBtn('🪙 Give', 'btnGive', async () => {
+      const c = prompt('Coins (+/-) for ' + p.username + ':', '50');
+      if (c === null) return;
+      const d = prompt('Diamonds (+/-):', '0');
+      const r = await api('/api/admin/give', { username: p.username, coins: c, diamonds: d });
+      if (!r.ok) alert(r.error); else loadAll();
+    }));
+    act.appendChild(mkBtn('🔑 Password', 'btnPw', async () => {
+      const np = prompt('New password for ' + p.username + ' (min 4 chars):');
+      if (!np) return;
+      const r = await api('/api/admin/set-password', { username: p.username, new_password: np });
+      if (!r.ok) alert(r.error); else alert('Password updated!');
+    }));
+    act.appendChild(mkBtn('↩ Reset', 'btnReset', async () => {
+      if (!confirm(p.username + ' ni progress zero karvi? (account raheshe)')) return;
+      const r = await api('/api/admin/reset-progress', { username: p.username });
+      if (!r.ok) alert(r.error); else loadAll();
+    }));
+    act.appendChild(mkBtn('🗑 Delete', 'btnDel', async () => {
+      if (!confirm(p.username + ' ne delete karvu? Pachu nahi malse!')) return;
+      const r = await api('/api/admin/delete', { username: p.username });
+      if (!r.ok) alert(r.error); else loadAll();
+    }));
+    tr.appendChild(act);
+    tb.appendChild(tr);
+  });
+
+  await loadFeedback();
+}
+
+async function loadFeedback() {
+  const f = await api('/api/admin/feedback');
+  if (!f.ok) {
+    $('feedbackStats').innerHTML = statBox('—', 'Feedback');
+    $('feedbackRows').innerHTML = '<tr><td colspan="5">Could not load feedback.</td></tr>';
+    return;
+  }
+  $('feedbackStats').innerHTML =
+    statBox(f.total || 0, 'Reviews') + statBox(Number(f.average || 0).toFixed(2) + ' / 5', 'Average Rating');
+  const fr = $('feedbackRows');
+  fr.innerHTML = '';
+  if (!(f.feedback || []).length) {
+    fr.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;">No feedback yet. Submit feedback from the game Settings.</td></tr>';
+    return;
+  }
+  (f.feedback || []).forEach((item) => {
+    const tr = document.createElement('tr');
+    const stars = '★'.repeat(Number(item.rating || 0)) + '☆'.repeat(5 - Number(item.rating || 0));
+    const player = item.username || item.safe_name || 'Unknown';
+    const message = item.message || '(No text feedback)';
+    tr.innerHTML = '<td>' + escapeHtml(player) + '</td>' +
+      '<td class="feedbackStars">' + stars + ' (' + item.rating + '/5)</td>' +
+      '<td class="feedbackMessage">' + escapeHtml(message) + '</td>' +
+      '<td>' + escapeHtml(item.created_at || '') + '</td>';
+    const act = document.createElement('td');
+    const del = document.createElement('button');
+    del.className = 'btnFeedbackDel';
+    del.textContent = '🗑 Delete';
+    del.addEventListener('click', async () => {
+      if (!confirm('Aa feedback delete karvu?')) return;
+      const r = await fetch('/api/admin/feedback/' + item.id, { method: 'DELETE' }).then(x => x.json());
+      if (!r.ok) alert(r.error || 'Could not delete feedback.');
+      else loadFeedback();
+    });
+    act.appendChild(del);
+    tr.appendChild(act);
+    fr.appendChild(tr);
+  });
+}
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+function statBox(v, label) { return '<div class="statBox"><b>' + v + '</b>' + label + '</div>'; }
+function mkBtn(text, cls, fn) {
+  const b = document.createElement('button');
+  b.textContent = text; b.className = cls;
+  b.addEventListener('click', fn);
+  return b;
+}
+</script>
+</body>
+</html>

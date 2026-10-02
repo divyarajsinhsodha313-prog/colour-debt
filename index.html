@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Colour Debt 3D — Python Edition</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+<!-- Round corner buttons: profile (top-left), settings (top-right),
+     shop (bottom-left), daily reward (bottom-right). Emoji icons only. -->
+<div id="cornerButtons">
+  <button class="cornerBtn" id="profileBtn" style="top:14px; left:14px;" title="Profile"><span>👤</span></button>
+  <button class="cornerBtn" id="settingsBtn" style="top:14px; right:14px;" title="Settings"><span>⚙️</span></button>
+  <button class="cornerBtn" id="shopBtn" style="bottom:14px; left:14px;" title="Shop"><span>🛍️</span></button>
+  <button class="cornerBtn" id="dailyRewardBtn" style="bottom:14px; right:14px;" title="Daily Reward"><span>🎁</span></button>
+</div>
+
+<!-- 3D game canvas + red flash shown when a life is lost -->
+<canvas id="three-canvas"></canvas>
+<div id="lifeFlash"></div>
+
+<!-- HUD bar: target colour, score, lives, coins (filled by game.js) -->
+<div id="hud">
+  <div><span class="swatchSmall" id="hudSwatch"></span><span id="hudCatch"></span></div>
+  <div id="hudScore"></div>
+  <div id="hudLives"></div>
+  <div id="hudCoins"></div>
+</div>
+<div id="hint">Drag left/right, or use Arrow Keys</div>
+
+<!-- Ability buttons used during a level (counts filled by game.js) -->
+<div id="abilityBar">
+  <button class="abilityBtn" id="abilityBtn-colorbomb"></button>
+  <button class="abilityBtn" id="abilityBtn-slowmo"></button>
+  <button class="abilityBtn" id="abilityBtn-lifeplus"></button>
+</div>
+
+<div id="trainBanner">Catch the <b>RED</b> blocks! Drag left/right or use Arrow Keys</div>
+
+<div class="overlay" id="screen-NAME_ENTRY">
+  <h1 class="title" style="font-size:2.2em;">WELCOME! </h1>
+  <!-- Name + password screen: new players register here, old players login below.
+       One name = one account, password is checked on the server (hash only). -->
+  <p class="sub">Create a new player name - one name = one account</p>
+  <input type="text" id="nameInput" maxlength="16" placeholder="Your name" autocomplete="username">
+  <input type="password" id="passwordInput" maxlength="32" placeholder="Password (min 4 characters)" autocomplete="current-password">
+  <p id="nameError"></p>
+  <button class="btn btn-green" id="nameContinueBtn">Register</button>
+  <div id="savedUsersList" style="margin-top:18px; display:flex; flex-wrap:wrap; gap:8px; justify-content:center; max-width:360px;"></div>
+  <!-- Old players pick their name below, type the same password above, then Login -->
+  <p class="sub" style="font-size:0.82em; margin-top:8px; opacity:0.7;">Played before? Click your name below, type your password above, then press Login. Without the password nobody can open your account.</p>
+  <button class="btn btn-gray" id="nameLoginBtn" style="margin-top:6px;">Login</button>
+</div>
+
+<!-- Main menu: pick EASY / MEDIUM / HARD or replay training -->
+<div class="overlay" id="screen-START">
+  <p class="sub" id="welcomeText">Select Difficulty</p>
+  <div>
+    <button class="btn btn-easy" data-diff="EASY">EASY</button><br>
+    <button class="btn btn-medium" data-diff="MEDIUM">MEDIUM</button><br>
+    <button class="btn btn-hard" data-diff="HARD">HARD</button><br>
+    <button class="btn" style="background:#2042a7;" id="trainingBtn">📖 Training</button>
+  </div>
+</div>
+
+<!-- Profile screen: shows coins, diamonds, progress (filled by game.js) -->
+<div class="overlay" id="screen-PROFILE">
+  <h1 class="title" style="font-size:2em;">👤 PROFILE</h1>
+  <div id="profileCard"></div>
+  <button class="btn btn-gold" id="logoutBtn" style="margin-top:14px;">🔄 Switch User</button><br>
+  <button class="btn btn-gray" id="profileBackBtn" style="margin-top:10px;">&lt; Back</button>
+</div>
+
+<!-- Settings screen: music and vibration ON/OFF toggles -->
+<div class="overlay" id="screen-SETTINGS">
+  <h1 class="title" style="font-size:2em;">⚙️ SETTINGS</h1>
+  <div style="width:340px; max-width:88vw; display:flex; flex-direction:column; gap:14px;">
+    <div class="settingRow"><span>🎵 Music</span><button class="btn-toggle" id="musicToggle"></button></div>
+    <div class="settingRow"><span>📳 Vibration on life lost</span><button class="btn-toggle" id="vibrationToggle"></button></div>
+  </div>
+
+  <div class="feedbackCard">
+    <div class="feedbackTitle">⭐ Rate &amp; Feedback</div>
+    <div class="feedbackSub">How was your game experience?</div>
+    <div class="starRating" id="starRating" role="radiogroup" aria-label="Game rating">
+      <button type="button" class="starBtn" data-rating="1" aria-label="1 star">★</button>
+      <button type="button" class="starBtn" data-rating="2" aria-label="2 stars">★</button>
+      <button type="button" class="starBtn" data-rating="3" aria-label="3 stars">★</button>
+      <button type="button" class="starBtn" data-rating="4" aria-label="4 stars">★</button>
+      <button type="button" class="starBtn" data-rating="5" aria-label="5 stars">★</button>
+    </div>
+    <textarea id="feedbackText" maxlength="500" placeholder="Write your feedback here..."></textarea>
+    <div class="feedbackMeta"><span id="feedbackCount">0/500</span><span>Optional</span></div>
+    <button class="btn btn-green" id="feedbackSubmitBtn" type="button">📨 Submit Feedback</button>
+    <div id="feedbackStatus" class="feedbackStatus"></div>
+  </div>
+
+  <button class="btn btn-gray" id="settingsBackBtn" style="margin-top:24px;">&lt; Back</button>
+</div>
+
+<!-- Daily reward screen: 7-day streak boxes + claim button -->
+<div class="overlay" id="screen-DAILY_REWARD">
+  <h1 class="title" style="font-size:2em;">🎁 DAILY REWARD</h1>
+  <p class="sub" id="dailyRewardSub"></p>
+  <div id="dailyRewardDays"></div>
+  <div id="dailyRewardBig"></div>
+  <button class="btn btn-green" id="dailyRewardClaimBtn">Claim Reward</button>
+  <button class="btn btn-gray" id="dailyRewardBackBtn" style="margin-top:10px;">&lt; Back</button>
+</div>
+
+<!-- Training intro screen shown once before the first real level -->
+<div class="overlay" id="screen-TRAINING">
+  <h1 class="title" style="font-size:2em;">TRAINING</h1>
+  <p class="sub">Catch <b style="color:#e5484d;">RED</b> blocks and avoid the rest.<br>
+    Move using drag or arrow keys — complete this mini level!</p>
+  <button class="btn btn-green" id="trainingGoBtn" style="margin-top:10px;">▶ Start Training</button>
+  <button class="btn btn-gray" id="trainingIntroBackBtn" style="margin-top:10px;">&lt; Back</button>
+</div>
+
+<div class="overlay" id="screen-TRAINING_COMPLETE">
+  <h1 class="title" style="color:#2fbf71; font-size:2.2em;">GREAT JOB!</h1>
+  <p class="sub">You've completed the training level.<br>You're ready to play for real!</p>
+  <button class="btn btn-green" id="trainingDoneBtn">Continue</button>
+</div>
+
+<!-- Shop screen: skin cards + ability cards built by game.js -->
+<div class="overlay" id="screen-SHOP">
+  <h1 class="title" style="font-size:2em;">🛍️ SHOP</h1>
+  <p class="sub" id="shopCoins"></p>
+  <div id="shopList"></div>
+  <button class="btn btn-gray" id="shopBackBtn" style="margin-top:18px;">&lt; Back</button>
+</div>
+
+<!-- Level select screen: winding road of 25 level nodes drawn by game.js -->
+<div class="overlay" id="screen-LEVEL_SELECT">
+  <h1 class="title" style="font-size:2.2em;">Select Level</h1>
+  <p class="sub" id="diffLabel"></p>
+  <div id="levelRoadWrap"><div id="levelRoad"><svg id="roadSvg"></svg></div></div>
+  <button class="btn btn-gray" id="backBtn" style="margin-top:24px;">&lt; Back</button>
+</div>
+
+<!-- Level complete screen: shows coins earned + diamond if any -->
+<div class="overlay" id="screen-LEVEL_COMPLETE">
+  <h1 class="title" style="color:#2fbf71;">LEVEL COMPLETE!</h1>
+  <p class="sub" id="lcText"></p>
+  <p class="sub" id="lcCoins"></p>
+  <p class="sub" id="lcDiamond" style="display:none;"></p>
+  <button class="btn btn-green" id="nextLevelBtn">Next Level</button><br>
+  <button class="btn btn-gray" id="lcMenuBtn">Level Select</button>
+</div>
+
+<!-- Game over screen: continue for 150 coins, retry or level menu -->
+<div class="overlay" id="screen-GAME_OVER">
+  <h1 class="title" style="color:#e5484d;">GAME OVER</h1>
+  <p class="sub" id="goText"></p>
+  <p class="sub" id="goContinueText"></p>
+  <p class="sub" style="font-size:0.9em;">No level-complete reward until the level is completed</p>
+  <button class="btn btn-gold" id="continueBtn">Continue</button><br>
+  <button class="btn btn-gray" id="retryBtn">Retry Level</button><br>
+  <button class="btn btn-gray" id="goMenuBtn">Level Select</button>
+</div>
+
+<!-- Background music file served by Flask from assets/ folder -->
+<audio id="bgMusic" src="/assets/bg_music.mp3" loop preload="auto"></audio>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="{{ url_for('static', filename='js/game.js') }}"></script>
+</body>
+</html>

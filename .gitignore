@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+game.db
+users/*.json
+save_data.json
