@@ -30,8 +30,21 @@ USERS_DIR = os.path.join(BASE_DIR, "users")
 # Render (free) ka file system har restart/deploy par wipe ho jata hai,
 # isliye game.db mit jata hai aur IDs gayab lagti hain. Render Disk lagane
 # par DATABASE_PATH=/var/data/game.db set karo taaki DB restart ke baad bhi rahe.
-DB_FILE = os.environ.get("DATABASE_PATH", os.path.join(BASE_DIR, "game.db"))
-os.makedirs(os.path.dirname(DB_FILE) or ".", exist_ok=True)
+# NOTE: agar DATABASE_PATH set hai par disk attach nahi hai (free plan),
+# to /var/data banate time PermissionError aata hai. Isliye fallback rakha
+# hai: disk na mile to local game.db use karo, crash mat karo.
+def _resolve_db_file():
+    wanted = (os.environ.get("DATABASE_PATH", "") or "").strip() or os.path.join(BASE_DIR, "game.db")
+    try:
+        parent = os.path.dirname(wanted)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        return wanted
+    except OSError:
+        return os.path.join(BASE_DIR, "game.db")
+
+
+DB_FILE = _resolve_db_file()
 os.makedirs(USERS_DIR, exist_ok=True)
 
 
