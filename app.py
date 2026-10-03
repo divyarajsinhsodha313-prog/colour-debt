@@ -27,24 +27,7 @@ app.secret_key = os.environ.get("SECRET_KEY", "colour-debt-3d-dev-secret")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SAVE_FILE = os.path.join(BASE_DIR, "save_data.json")  # legacy: single-user file (migrate only)
 USERS_DIR = os.path.join(BASE_DIR, "users")
-# Render (free) ka file system har restart/deploy par wipe ho jata hai,
-# isliye game.db mit jata hai aur IDs gayab lagti hain. Render Disk lagane
-# par DATABASE_PATH=/var/data/game.db set karo taaki DB restart ke baad bhi rahe.
-# NOTE: agar DATABASE_PATH set hai par disk attach nahi hai (free plan),
-# to /var/data banate time PermissionError aata hai. Isliye fallback rakha
-# hai: disk na mile to local game.db use karo, crash mat karo.
-def _resolve_db_file():
-    wanted = (os.environ.get("DATABASE_PATH", "") or "").strip() or os.path.join(BASE_DIR, "game.db")
-    try:
-        parent = os.path.dirname(wanted)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        return wanted
-    except OSError:
-        return os.path.join(BASE_DIR, "game.db")
-
-
-DB_FILE = _resolve_db_file()
+DB_FILE = os.path.join(BASE_DIR, "game.db")  # SQLite database - all player data lives here now
 os.makedirs(USERS_DIR, exist_ok=True)
 
 
@@ -56,9 +39,55 @@ os.makedirs(USERS_DIR, exist_ok=True)
 # in one SQLite file (game.db) in the users table. Same data
 # as before, only the storage changed from files to DB rows.
 # ---------------------------------------------------------
+# ---------------------------------------------------------
+# Where the data lives
+# Render free plan has a TEMPORARY disk: when the server sleeps,
+# restarts or redeploys, game.db is reset and all players vanish.
+# So on Render I set the DATABASE_URL env var (free Postgres from
+# Neon or Supabase) and the game stores everything there instead.
+# If DATABASE_URL is not set (my laptop) it uses game.db like before.
+# ---------------------------------------------------------
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
+USE_PG = bool(DATABASE_URL)
+if USE_PG:
+    import psycopg2
+    import psycopg2.extras
+
+
+class _PgConn:
+    # Small wrapper so the rest of the code can keep using the same
+    # con.execute(...) / row["name"] style as with sqlite.
+    def __init__(self, con):
+        self._con = con
+
+    def execute(self, sql, params=()):
+        sql = sql.replace("?", "%s")
+        sql = sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+        sql = sql.replace("created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+                          "created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text)")
+        cur = self._con.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(sql, tuple(params))
+        return cur
+
+    def commit(self):
+        pass  # autocommit is on
+
+    def close(self):
+        try:
+            self._con.close()
+        except Exception:
+            pass
+
+
 def get_db():
     # I open a fresh connection per call and close it myself,
     # so the Flask dev server (threaded) never shares one cursor.
+    if USE_PG:
+        con = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+        con.autocommit = True
+        return _PgConn(con)
     con = sqlite3.connect(DB_FILE)
     con.row_factory = sqlite3.Row
     return con
@@ -93,6 +122,17 @@ def init_db():
             seen_training INTEGER DEFAULT 0,
             last_login_date TEXT,
             login_streak INTEGER DEFAULT 0
+        )"""
+    )
+    # Player feedback: one row per submitted rating/comment.
+    con.execute(
+        """CREATE TABLE IF NOT EXISTS feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            safe_name TEXT NOT NULL,
+            username TEXT,
+            rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+            message TEXT DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )"""
     )
     # Old game.db files were made before the emoji columns existed,
@@ -478,6 +518,12 @@ def public_state(saved):
 # ---------------------------------------------------------
 # Pages
 # ---------------------------------------------------------
+@app.route("/health")
+def health():
+    # Tiny page for UptimeRobot / cron-job.org to ping (keeps Render awake).
+    return "ok", 200
+
+
 @app.route("/")
 def index():
     # Home page - this loads templates/index.html with all screens
@@ -776,6 +822,45 @@ def _require_admin():
     return None
 
 
+@app.route("/api/feedback", methods=["POST"])
+def api_feedback():
+    """Save a player's 1-5 star rating and optional text feedback."""
+    username = session.get("username")
+    if not username:
+        return jsonify({"ok": False, "error": "Please log in first."}), 401
+
+    body = request.json or {}
+    try:
+        rating = int(body.get("rating", 0))
+    except (TypeError, ValueError):
+        rating = 0
+
+    message = str(body.get("message", "") or "").strip()
+    if rating < 1 or rating > 5:
+        return jsonify({"ok": False, "error": "Please select a rating from 1 to 5 stars."}), 400
+    if len(message) > 500:
+        return jsonify({"ok": False, "error": "Feedback must be 500 characters or less."}), 400
+
+    safe = _safe_username(username)
+    con = get_db()
+    # Backward compatibility for databases created before feedback was added.
+    con.execute("""CREATE TABLE IF NOT EXISTS feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        safe_name TEXT NOT NULL,
+        username TEXT,
+        rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+        message TEXT DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
+    con.execute(
+        "INSERT INTO feedback (safe_name, username, rating, message) VALUES (?, ?, ?, ?)",
+        (safe, username, rating, message),
+    )
+    con.commit()
+    con.close()
+    return jsonify({"ok": True, "message": "Thanks! Your feedback was submitted."})
+
+
 @app.route("/admin")
 def admin_page():
     # Admin website - templates/admin.html khule chhe.
@@ -819,6 +904,54 @@ def api_admin_overview():
         "topPlayers": [{"username": u["username"], "coins": u["coins"],
                         "levelsCompletedCount": u["levelsCompletedCount"]} for u in top],
     })
+
+
+@app.route("/api/admin/feedback")
+def api_admin_feedback():
+    """Return all player feedback for the admin dashboard."""
+    denied = _require_admin()
+    if denied:
+        return denied
+    con = get_db()
+    # Make the feedback table available even when an older game.db is used.
+    con.execute("""CREATE TABLE IF NOT EXISTS feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        safe_name TEXT NOT NULL,
+        username TEXT,
+        rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+        message TEXT DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
+    con.commit()
+    rows = con.execute(
+        "SELECT id, safe_name, username, rating, message, created_at "
+        "FROM feedback ORDER BY id DESC"
+    ).fetchall()
+    summary = con.execute(
+        "SELECT COUNT(*) AS total, COALESCE(AVG(rating), 0) AS average FROM feedback"
+    ).fetchone()
+    con.close()
+    return jsonify({
+        "ok": True,
+        "total": summary["total"],
+        "average": round(float(summary["average"] or 0), 2),
+        "feedback": [dict(r) for r in rows],
+    })
+
+
+@app.route("/api/admin/feedback/<int:feedback_id>", methods=["DELETE"])
+def api_admin_delete_feedback(feedback_id):
+    """Allow admin to remove a feedback entry."""
+    denied = _require_admin()
+    if denied:
+        return denied
+    con = get_db()
+    cur = con.execute("DELETE FROM feedback WHERE id = ?", (feedback_id,))
+    con.commit()
+    con.close()
+    if cur.rowcount == 0:
+        return jsonify({"ok": False, "error": "Feedback not found."}), 404
+    return jsonify({"ok": True})
 
 
 @app.route("/api/admin/users")
@@ -938,36 +1071,6 @@ def api_settings():
         saved["vibrationOn"] = bool(body["vibrationOn"])
     write_save(saved)
     return jsonify({"ok": True, "state": public_state(saved)})
-
-
-@app.route("/api/health")
-def api_health():
-    # Render cold-start + DB health check. Isse pata chalta hai ki
-    # site zinda hai, kaunsa DB file use ho raha hai, kitne users hain
-    # aur kya DB restart me bhi survive karega (writable dir + env var).
-    try:
-        con = get_db()
-        count = con.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
-        con.close()
-        db_ok = True
-    except Exception:
-        count = 0
-        db_ok = False
-    try:
-        db_dir = os.path.dirname(DB_FILE) or "."
-        writable = os.access(db_dir, os.W_OK)
-    except OSError:
-        writable = False
-    return jsonify({
-        "ok": True,
-        "db_ok": db_ok,
-        "users": count,
-        "db_file": DB_FILE,
-        "db_persistent": os.path.dirname(DB_FILE) not in ("", BASE_DIR),
-        "hint": ("DATABASE_PATH set nahi hai: Render par free file system wipe "
-                 "hota hai, disk lagakar DATABASE_PATH=/var/data/game.db set karo.")
-                 if os.path.dirname(DB_FILE) in ("", BASE_DIR) else "DB Render Disk par hai.",
-    })
 
 
 init_db()
