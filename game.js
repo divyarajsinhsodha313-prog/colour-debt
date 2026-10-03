@@ -568,11 +568,29 @@ function renderLevelGrid() {
 
 // I show a small rotating 3D preview of every skin in the shop
 // so the player can see the design before buying it.
+// ONE shared WebGL renderer draws ALL shop previews. Before, every
+// preview (6 skins + 6 faces = 12) had its own renderer, and phones
+// allow only ~8 WebGL contexts - so the 3D previews went blank on
+// mobile (and could even black out the main game). Now each preview
+// is a normal 2D canvas and the shared renderer is copied into it.
+let _shopGL = null;
+function getShopGL() {
+  if (!_shopGL) {
+    const c = document.createElement('canvas');
+    c.width = 70; c.height = 70;
+    _shopGL = new THREE.WebGLRenderer({ canvas: c, alpha: true, antialias: true, preserveDrawingBuffer: true });
+    _shopGL.setSize(70, 70, false);
+  }
+  return _shopGL;
+}
+function makePreviewOutCanvas() {
+  const cv = document.createElement('canvas');
+  cv.width = 70; cv.height = 70;
+  return cv;
+}
 let shopPreviewScenes = [];
 function disposeShopPreviews() {
-  // I free every preview fully here. renderer.dispose() alone does NOT
-  // free the browser 3D context (only ~16 allowed) - without loseContext
-  // the main game went black after opening the shop a few times.
+  // Free geometries/materials/textures only. The shared renderer stays alive.
   shopPreviewScenes.forEach((p) => {
     try {
       p.scene.traverse((o) => {
@@ -582,19 +600,12 @@ function disposeShopPreviews() {
           m.dispose();
         });
       });
-      const gl = p.renderer.getContext();
-      const lose = gl && gl.getExtension('WEBGL_lose_context');
-      if (lose) lose.loseContext();
-      p.renderer.dispose();
     } catch (e) {}
   });
   shopPreviewScenes = [];
 }
 function createShopPreviewCanvas(skinId, hex) {
-  const cv = document.createElement('canvas');
-  cv.width = 70; cv.height = 70;
-  const r = new THREE.WebGLRenderer({ canvas: cv, alpha: true, antialias: true });
-  r.setSize(70, 70, false);
+  const cv = makePreviewOutCanvas();
   const sc = new THREE.Scene();
   const cam = new THREE.PerspectiveCamera(40, 1, 0.1, 10);
   cam.position.set(0, 0, 2.4);
@@ -605,17 +616,14 @@ function createShopPreviewCanvas(skinId, hex) {
   const { geo, mat } = buildSkinGeometryAndMaterial(skinId, hex, null);
   const mesh = new THREE.Mesh(geo, mat);
   sc.add(mesh);
-  shopPreviewScenes.push({ renderer: r, scene: sc, camera: cam, mesh });
+  shopPreviewScenes.push({ out: cv, scene: sc, camera: cam, mesh });
   return cv;
 }
 // 3D ball-face preview: a real mini white ball (sphere + face sprite)
 // instead of a flat emoji, so the shop shows exactly what the
 // player will wear in the game.
 function createFacePreviewCanvas(icon) {
-  const cv = document.createElement('canvas');
-  cv.width = 70; cv.height = 70;
-  const r = new THREE.WebGLRenderer({ canvas: cv, alpha: true, antialias: true });
-  r.setSize(70, 70, false);
+  const cv = makePreviewOutCanvas();
   const sc = new THREE.Scene();
   const cam = new THREE.PerspectiveCamera(40, 1, 0.1, 10);
   cam.position.set(0, 0, 2.4);
@@ -643,16 +651,30 @@ function createFacePreviewCanvas(icon) {
     grp.add(faceMesh);
   }
   sc.add(grp);
-  shopPreviewScenes.push({ renderer: r, scene: sc, camera: cam, mesh: grp });
+  shopPreviewScenes.push({ out: cv, scene: sc, camera: cam, mesh: grp });
   return cv;
 }
+let shopAnimRunning = false;
 function animateShopPreviews() {
-  shopPreviewScenes.forEach((p) => {
-    p.mesh.rotation.x += 0.012;
-    p.mesh.rotation.y += 0.018;
-    p.renderer.render(p.scene, p.camera);
-  });
-  if (run.screen === 'SHOP') requestAnimationFrame(animateShopPreviews);
+  // Only one loop at a time, even if the shop is opened again and again.
+  if (shopAnimRunning) return;
+  shopAnimRunning = true;
+  const tick = () => {
+    if (run.screen !== 'SHOP') { shopAnimRunning = false; return; }
+    try {
+      const gl = getShopGL();
+      shopPreviewScenes.forEach((p) => {
+        p.mesh.rotation.x += 0.012;
+        p.mesh.rotation.y += 0.018;
+        gl.render(p.scene, p.camera);
+        const ctx = p.out.getContext('2d');
+        ctx.clearRect(0, 0, 70, 70);
+        ctx.drawImage(gl.domElement, 0, 0);
+      });
+    } catch (e) {}
+    requestAnimationFrame(tick);
+  };
+  tick();
 }
 
 async function renderShop() {
