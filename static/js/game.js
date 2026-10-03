@@ -566,52 +566,31 @@ function renderLevelGrid() {
   wrap.scrollTop = wrap.scrollHeight;
 }
 
-// I show a small 3D preview of every skin in the shop so the player
-// can see the design before buying it. Earlier I made one LIVE
-// WebGLRenderer per card (6 skins + 6 faces + main game = 13 live
-// contexts). Browsers allow only ~8-16, so the boxes went BLACK.
-// Now I use ONE shared offscreen renderer and save each preview as a
-// static photo (dataURL <img>). The shop uses 0 extra live contexts,
-// so opening the shop any number of times never goes black.
-let shopPreviewScenes = []; // kept only to free very old live previews, if any
-let previewRenderer = null;
-function getPreviewRenderer() {
-  // Single 70x70 renderer for all snapshots. preserveDrawingBuffer
-  // must be true, otherwise toDataURL() returns a blank photo.
-  if (!previewRenderer) {
-    const cv = document.createElement('canvas');
-    cv.width = 70; cv.height = 70;
-    previewRenderer = new THREE.WebGLRenderer({ canvas: cv, alpha: true, antialias: true, preserveDrawingBuffer: true });
-    previewRenderer.setSize(70, 70, false);
+// I show a small rotating 3D preview of every skin in the shop
+// so the player can see the design before buying it.
+// ONE shared WebGL renderer draws ALL shop previews. Before, every
+// preview (6 skins + 6 faces = 12) had its own renderer, and phones
+// allow only ~8 WebGL contexts - so the 3D previews went blank on
+// mobile (and could even black out the main game). Now each preview
+// is a normal 2D canvas and the shared renderer is copied into it.
+let _shopGL = null;
+function getShopGL() {
+  if (!_shopGL) {
+    const c = document.createElement('canvas');
+    c.width = 70; c.height = 70;
+    _shopGL = new THREE.WebGLRenderer({ canvas: c, alpha: true, antialias: true, preserveDrawingBuffer: true });
+    _shopGL.setSize(70, 70, false);
   }
-  return previewRenderer;
+  return _shopGL;
 }
-function snapshotToImage(sc, cam) {
-  // I draw the scene once and return it as a normal <img> photo.
-  // The shared canvas is reused, but the dataURL copy stays safe.
-  const r = getPreviewRenderer();
-  r.render(sc, cam);
-  const img = document.createElement('img');
-  img.src = r.domElement.toDataURL();
-  img.width = 70; img.height = 70;
-  return img;
+function makePreviewOutCanvas() {
+  const cv = document.createElement('canvas');
+  cv.width = 70; cv.height = 70;
+  return cv;
 }
-function disposePreviewScene(sc) {
-  // I free only this photo's shapes and materials here. The shared
-  // renderer itself stays alive for the next photo.
-  sc.traverse((o) => {
-    if (o.geometry) o.geometry.dispose();
-    if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => {
-      if (m.map && !Object.values(stripedTextureCache).includes(m.map)) m.map.dispose();
-      m.dispose();
-    });
-  });
-}
+let shopPreviewScenes = [];
 function disposeShopPreviews() {
-  // I free every OLD live preview fully here (very old code made one
-  // renderer per card). renderer.dispose() alone does NOT free the
-  // browser 3D context (only ~16 allowed) - without loseContext
-  // the main game went black after opening the shop a few times.
+  // Free geometries/materials/textures only. The shared renderer stays alive.
   shopPreviewScenes.forEach((p) => {
     try {
       p.scene.traverse((o) => {
@@ -621,16 +600,12 @@ function disposeShopPreviews() {
           m.dispose();
         });
       });
-      const gl = p.renderer.getContext();
-      const lose = gl && gl.getExtension('WEBGL_lose_context');
-      if (lose) lose.loseContext();
-      p.renderer.dispose();
     } catch (e) {}
   });
   shopPreviewScenes = [];
 }
-function previewSceneBase() {
-  // Small helper: one camera + lights setup shared by all photos.
+function createShopPreviewCanvas(skinId, hex) {
+  const cv = makePreviewOutCanvas();
   const sc = new THREE.Scene();
   const cam = new THREE.PerspectiveCamera(40, 1, 0.1, 10);
   cam.position.set(0, 0, 2.4);
@@ -638,68 +613,68 @@ function previewSceneBase() {
   const dl = new THREE.DirectionalLight(0xffffff, 0.9);
   dl.position.set(2, 2, 3);
   sc.add(dl);
-  return { sc, cam };
+  const { geo, mat } = buildSkinGeometryAndMaterial(skinId, hex, null);
+  const mesh = new THREE.Mesh(geo, mat);
+  sc.add(mesh);
+  shopPreviewScenes.push({ out: cv, scene: sc, camera: cam, mesh });
+  return cv;
 }
-function shopFallbackBox(text) {
-  // If 3D fails on some phone, I still show a box with an icon
-  // instead of a black square, so the shop never looks broken.
-  const d = document.createElement('div');
-  d.className = 'shopPreview';
-  d.style.cssText = 'background:#31405c;display:flex;align-items:center;justify-content:center;font-size:1.6em;';
-  d.textContent = text || '🎲';
-  return d;
-}
-function createShopPreviewCanvas(skinId, hex) {
-  // I take ONE photo of the skin shape from a fixed nice angle.
-  // No live renderer per card, so no black boxes anymore.
-  try {
-    const { sc, cam } = previewSceneBase();
-    const { geo, mat } = buildSkinGeometryAndMaterial(skinId, hex, null);
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.rotation.set(0.5, 0.6, 0);
-    sc.add(mesh);
-    const img = snapshotToImage(sc, cam);
-    disposePreviewScene(sc);
-    return img;
-  } catch (e) {
-    return shopFallbackBox('🎲');
-  }
-}
-// 3D ball-face preview photo: a real mini white ball (sphere + face
-// sprite) instead of a flat emoji, so the shop shows exactly what the
-// player will wear in the game. Photo only, same shared renderer.
+// 3D ball-face preview: a real mini white ball (sphere + face sprite)
+// instead of a flat emoji, so the shop shows exactly what the
+// player will wear in the game.
 function createFacePreviewCanvas(icon) {
-  try {
-    const { sc, cam } = previewSceneBase();
-    const grp = new THREE.Group();
-    const ball = new THREE.Mesh(
-      new THREE.SphereGeometry(0.5, 20, 20),
-      new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0x222222 })
-    );
-    grp.add(ball);
-    if (icon) {
-      const c = document.createElement('canvas'); c.width = 128; c.height = 128;
-      const cx = c.getContext('2d');
-      cx.font = '92px serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
-      cx.fillText(icon, 64, 70);
-      const faceMesh = new THREE.Sprite(new THREE.SpriteMaterial({
-        map: new THREE.CanvasTexture(c), transparent: true, depthTest: false,
-      }));
-      faceMesh.scale.set(0.68, 0.68, 1);
-      faceMesh.renderOrder = 5;
-      grp.add(faceMesh);
-    }
-    sc.add(grp);
-    const img = snapshotToImage(sc, cam);
-    disposePreviewScene(sc);
-    return img;
-  } catch (e) {
-    return shopFallbackBox(icon || '⚪');
+  const cv = makePreviewOutCanvas();
+  const sc = new THREE.Scene();
+  const cam = new THREE.PerspectiveCamera(40, 1, 0.1, 10);
+  cam.position.set(0, 0, 2.4);
+  sc.add(new THREE.AmbientLight(0xffffff, 0.75));
+  const dl = new THREE.DirectionalLight(0xffffff, 0.9);
+  dl.position.set(2, 2, 3);
+  sc.add(dl);
+  const grp = new THREE.Group();
+  const ball = new THREE.Mesh(
+    new THREE.SphereGeometry(0.5, 20, 20),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0x222222 })
+  );
+  grp.add(ball);
+  let faceMesh = null;
+  if (icon) {
+    const c = document.createElement('canvas'); c.width = 128; c.height = 128;
+    const cx = c.getContext('2d');
+    cx.font = '92px serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
+    cx.fillText(icon, 64, 70);
+    faceMesh = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: new THREE.CanvasTexture(c), transparent: true, depthTest: false,
+    }));
+    faceMesh.scale.set(0.68, 0.68, 1);
+    faceMesh.renderOrder = 5;
+    grp.add(faceMesh);
   }
+  sc.add(grp);
+  shopPreviewScenes.push({ out: cv, scene: sc, camera: cam, mesh: grp });
+  return cv;
 }
+let shopAnimRunning = false;
 function animateShopPreviews() {
-  // No live loop now: previews are static photos, nothing to redraw.
-  // I keep this function so the SHOP screen code keeps working.
+  // Only one loop at a time, even if the shop is opened again and again.
+  if (shopAnimRunning) return;
+  shopAnimRunning = true;
+  const tick = () => {
+    if (run.screen !== 'SHOP') { shopAnimRunning = false; return; }
+    try {
+      const gl = getShopGL();
+      shopPreviewScenes.forEach((p) => {
+        p.mesh.rotation.x += 0.012;
+        p.mesh.rotation.y += 0.018;
+        gl.render(p.scene, p.camera);
+        const ctx = p.out.getContext('2d');
+        ctx.clearRect(0, 0, 70, 70);
+        ctx.drawImage(gl.domElement, 0, 0);
+      });
+    } catch (e) {}
+    requestAnimationFrame(tick);
+  };
+  tick();
 }
 
 async function renderShop() {
@@ -880,6 +855,67 @@ function renderSettings() {
   applyMusicSetting();
 }
 
+let selectedFeedbackRating = 0;
+
+function setFeedbackRating(rating) {
+  selectedFeedbackRating = rating;
+  document.querySelectorAll('#starRating .starBtn').forEach((btn) => {
+    btn.classList.toggle('active', Number(btn.dataset.rating) <= rating);
+  });
+}
+
+function resetFeedbackForm() {
+  selectedFeedbackRating = 0;
+  document.querySelectorAll('#starRating .starBtn').forEach((btn) => btn.classList.remove('active'));
+  const input = $('feedbackText');
+  if (input) input.value = '';
+  if ($('feedbackCount')) $('feedbackCount').textContent = '0/500';
+  if ($('feedbackStatus')) {
+    $('feedbackStatus').textContent = '';
+    $('feedbackStatus').classList.remove('error');
+  }
+}
+
+function initFeedback() {
+  document.querySelectorAll('#starRating .starBtn').forEach((btn) => {
+    btn.addEventListener('click', () => setFeedbackRating(Number(btn.dataset.rating)));
+  });
+
+  const input = $('feedbackText');
+  if (input) {
+    input.addEventListener('input', () => {
+      $('feedbackCount').textContent = input.value.length + '/500';
+    });
+  }
+
+  $('feedbackSubmitBtn').addEventListener('click', async () => {
+    const status = $('feedbackStatus');
+    if (!selectedFeedbackRating) {
+      status.textContent = 'Please select a star rating first.';
+      status.classList.add('error');
+      return;
+    }
+
+    const message = $('feedbackText').value.trim();
+    const result = await api('/api/feedback', {
+      rating: selectedFeedbackRating,
+      message: message
+    });
+
+    if (!result.ok) {
+      status.textContent = result.error || 'Could not submit feedback.';
+      status.classList.add('error');
+      return;
+    }
+
+    status.classList.remove('error');
+    status.textContent = '✓ Thanks! Your feedback was submitted.';
+    $('feedbackText').value = '';
+    $('feedbackCount').textContent = '0/500';
+    setFeedbackRating(0);
+  });
+}
+
 function renderDailyReward() {
   const day = S.dailyRewardDay;
   const claimBtn = $('dailyRewardClaimBtn');
@@ -1040,5 +1076,6 @@ function animate() {
   setScreen(S.initialScreen || 'START');
   if ((S.initialScreen || 'START') === 'NAME_ENTRY') renderSavedUsers();
   applyMusicSetting();
+  initFeedback();
   animate();
 })();
